@@ -1,0 +1,68 @@
+# docker-compose.yml — Fase 6.3 (versión con network_mode: host)
+# Diagnóstico: la red bridge de Docker 29 da timeouts con la imagen Flower 1.28.
+# network_mode: host hace que los contenedores compartan la red del host,
+# evitando el bridge problemático.
+
+services:
+  superlink:
+    image: flwr/superlink:1.28.0
+    container_name: almendros-superlink
+    network_mode: host
+    command:
+      - --insecure
+      - --fleet-api-address=0.0.0.0:9092
+      - --serverappio-api-address=0.0.0.0:9091
+      - --control-api-address=0.0.0.0:9093
+    restart: unless-stopped
+
+  supernode-manana:
+    image: almendros-supernode:manana
+    container_name: almendros-supernode-manana
+    network_mode: host
+    command:
+      - --insecure
+      - --superlink=127.0.0.1:9092
+      - --node-config=partition-id=0
+      - --clientappio-api-address=127.0.0.1:9094
+    depends_on:
+      - superlink
+    restart: unless-stopped
+
+  supernode-tarde:
+    image: almendros-supernode:tarde
+    container_name: almendros-supernode-tarde
+    network_mode: host
+    command:
+      - --insecure
+      - --superlink=127.0.0.1:9092
+      - --node-config=partition-id=1
+      - --clientappio-api-address=127.0.0.1:9095
+    depends_on:
+      - superlink
+    restart: unless-stopped
+
+  supernode-nublado:
+    image: almendros-supernode:nublado
+    container_name: almendros-supernode-nublado
+    network_mode: host
+    command:
+      - --insecure
+      - --superlink=127.0.0.1:9092
+      - --node-config=partition-id=2
+      - --clientappio-api-address=127.0.0.1:9096
+    depends_on:
+      - superlink
+    restart: unless-stopped
+
+  supernode-otros:
+    image: almendros-supernode:otros_moviles
+    container_name: almendros-supernode-otros
+    network_mode: host
+    command:
+      - --insecure
+      - --superlink=127.0.0.1:9092
+      - --node-config=partition-id=3
+      - --clientappio-api-address=127.0.0.1:9097
+    depends_on:
+      - superlink
+    restart: unless-stopped

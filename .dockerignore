@@ -1,0 +1,26 @@
+# Archivos que NO se copian al contexto de Docker.
+# Importante: este archivo debe estar en la RAÍZ del contexto del build.
+
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.venv/
+venv/
+results/
+deployment_logs/
+wandb/
+*.log
+.flwr/
+.idea/
+.vscode/
+*.egg-info/
+build/
+dist/
+docker-compose.yml
+README.md
+*.pt
+*.pth
+
+# OJO: NO ignoramos data/ ni docker/ porque los necesitamos en el build.

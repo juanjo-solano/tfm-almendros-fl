@@ -1,0 +1,291 @@
+"""almendros_fl: definiciones de modelo, datos y entrenamiento/test."""
+
+from pathlib import Path
+from typing import Tuple
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, random_split
+from torchvision import transforms, models
+from torchvision.datasets import ImageFolder
+
+
+# ───────────────────────────────────────────────────────────
+# Configuración global
+# ───────────────────────────────────────────────────────────
+# Mapeo de partition_id (0-3) a cada contexto fotográfico.
+# El orden es IMPORTANTE: cada cliente federado recibirá su contexto por este id.
+CONTEXTS = ["manana", "tarde", "nublado", "otros_moviles"]
+
+# Las 4 clases de plantas. Estos nombres deben coincidir EXACTAMENTE con las
+# subcarpetas dentro de cada contexto. ImageFolder los lee por orden alfabético,
+# así que el mapeo de etiquetas será:
+#   0 -> FOTOS_ALMENDRO_SANO
+#   1 -> FOTOS_MALVAS
+#   2 -> FOTOS_ORUGAS_BLANCAS
+#   3 -> FOTOS_VALLICO
+CLASS_NAMES = ["FOTOS_ALMENDRO_SANO", "FOTOS_MALVAS",
+               "FOTOS_ORUGAS_BLANCAS", "FOTOS_VALLICO"]
+NUM_CLASSES = len(CLASS_NAMES)
+
+IMG_SIZE = 128   # usamos 128x128 en CPU para que sea manejable
+import os
+
+# Permitir override por variable de entorno (útil cuando Flower instala la app
+# en ~/.flwr/apps/... y la carpeta data/ no se empaqueta).
+# Si no está definida, intentamos varias ubicaciones razonables.
+_env_root = os.environ.get("ALMENDROS_DATA_ROOT")
+if _env_root:
+    DATA_ROOT = Path(_env_root).expanduser().resolve()
+else:
+    # Buscar 'data/' en el proyecto: arriba del paquete (caso normal)
+    # o en el cwd (fallback).
+    _candidates = [
+        Path(__file__).parent.parent / "data",
+        Path.cwd() / "data",
+    ]
+    DATA_ROOT = next((p for p in _candidates if p.exists()),
+                     _candidates[0]).resolve()
+
+
+# ───────────────────────────────────────────────────────────
+# Modelo: ResNet18 ligero, con cabeza adaptada a 4 clases
+# ───────────────────────────────────────────────────────────
+class Net(nn.Module):
+    """ResNet18 pre-entrenada con la última capa adaptada a 4 clases."""
+
+    def __init__(self, num_classes: int = NUM_CLASSES):
+        super().__init__()
+        # weights=None → no descarga pesos (CPU puro sería lento con ImageNet).
+        # Si prefieres usar pre-entrenada, cambia a: weights="IMAGENET1K_V1"
+        self.backbone = models.resnet18(weights=None)
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.backbone(x)
+
+
+# ───────────────────────────────────────────────────────────
+# Transforms: entrenamiento con augmentación ligera, test sin
+# ───────────────────────────────────────────────────────────
+def _train_transform():
+    return transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+
+def _eval_transform():
+    return transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+
+# ───────────────────────────────────────────────────────────
+# Carga de datos por partición (un contexto = un cliente)
+# ───────────────────────────────────────────────────────────
+def load_data(partition_id: int, batch_size: int = 16
+              ) -> Tuple[DataLoader, DataLoader]:
+    """Carga el contexto correspondiente al partition_id."""
+    if partition_id >= len(CONTEXTS):
+        raise ValueError(
+            f"partition_id={partition_id} fuera de rango. "
+            f"Tenemos {len(CONTEXTS)} contextos: {CONTEXTS}"
+        )
+
+    if not DATA_ROOT.exists():
+        raise FileNotFoundError(
+            f"No existe DATA_ROOT={DATA_ROOT}. "
+            f"Define ALMENDROS_DATA_ROOT con la ruta absoluta a tu data/."
+        )
+
+    context_name = CONTEXTS[partition_id]
+    context_dir = DATA_ROOT / context_name
+
+    if not context_dir.exists():
+        raise FileNotFoundError(
+            f"No existe la carpeta del contexto {context_name}: {context_dir}"
+        )
+
+    # Cargamos con el transform de entrenamiento; luego separamos
+    full_dataset = ImageFolder(root=str(context_dir),
+                               transform=_train_transform())
+
+    # Split 80/20 determinista (misma semilla para reproducibilidad)
+    n_total = len(full_dataset)
+    n_train = int(0.8 * n_total)
+    n_val = n_total - n_train
+    generator = torch.Generator().manual_seed(42)
+    train_ds, val_ds = random_split(full_dataset, [n_train, n_val],
+                                    generator=generator)
+
+    # Aplicamos el transform de eval al subset de validación
+    # (truco: envolvemos con un dataset que sobrescribe el transform)
+    val_ds.dataset.transform = _eval_transform()
+    # OJO: esto afecta también al train_ds porque comparten dataset base.
+    # Para evitarlo, creamos dos ImageFolder distintos:
+    train_base = ImageFolder(root=str(context_dir), transform=_train_transform())
+    val_base = ImageFolder(root=str(context_dir), transform=_eval_transform())
+    train_ds = torch.utils.data.Subset(train_base, train_ds.indices)
+    val_ds = torch.utils.data.Subset(val_base, val_ds.indices)
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size,
+                              shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=batch_size,
+                            shuffle=False, num_workers=0)
+
+    return train_loader, val_loader
+
+
+def load_centralized_test(batch_size: int = 16) -> DataLoader:
+    """Dataset de test centralizado del servidor.
+
+    Toma el 20% de validación de CADA contexto (con la misma semilla 42 que
+    usa load_data) y los une. Así el servidor evalúa sobre los 4 dominios.
+    """
+    if not DATA_ROOT.exists():
+        raise FileNotFoundError(
+            f"No existe DATA_ROOT={DATA_ROOT}. "
+            f"Define la variable de entorno ALMENDROS_DATA_ROOT con la ruta "
+            f"absoluta a tu carpeta data/."
+        )
+
+    datasets = []
+    missing = []
+    for context_name in CONTEXTS:
+        ctx_dir = DATA_ROOT / context_name
+        if not ctx_dir.exists():
+            missing.append(str(ctx_dir))
+            continue
+        ds = ImageFolder(root=str(ctx_dir), transform=_eval_transform())
+        n_total = len(ds)
+        n_train = int(0.8 * n_total)
+        n_val = n_total - n_train
+        generator = torch.Generator().manual_seed(42)
+        _, val_ds = random_split(ds, [n_train, n_val], generator=generator)
+        datasets.append(val_ds)
+
+    if not datasets:
+        raise FileNotFoundError(
+            f"No se encontró ningún contexto en DATA_ROOT={DATA_ROOT}. "
+            f"Faltan: {missing}"
+        )
+
+    combined = torch.utils.data.ConcatDataset(datasets)
+    return DataLoader(combined, batch_size=batch_size,
+                      shuffle=False, num_workers=0)
+
+# ───────────────────────────────────────────────────────────
+# Funciones de entrenamiento y test locales
+# ───────────────────────────────────────────────────────────
+def train(net: nn.Module, trainloader: DataLoader, epochs: int,
+          lr: float, device: torch.device) -> float:
+    """Entrena la red localmente y devuelve la loss media de la última epoch."""
+    net.to(device)
+    net.train()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9)
+
+    last_loss = 0.0
+    for epoch in range(epochs):
+        running_loss = 0.0
+        n_batches = 0
+        for images, labels in trainloader:
+            images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = net(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+            n_batches += 1
+        last_loss = running_loss / max(1, n_batches)
+
+    return last_loss
+
+
+def test(net: nn.Module, testloader: DataLoader,
+         device: torch.device) -> Tuple[float, float]:
+    """Evalúa la red y devuelve (loss, accuracy)."""
+    net.to(device)
+    net.eval()
+    criterion = nn.CrossEntropyLoss()
+    total_loss, correct, total = 0.0, 0, 0
+
+    with torch.no_grad():
+        for images, labels in testloader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = net(images)
+            loss = criterion(outputs, labels)
+            total_loss += loss.item() * labels.size(0)
+            _, preds = outputs.max(1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+
+    avg_loss = total_loss / max(1, total)
+    accuracy = correct / max(1, total)
+    return avg_loss, accuracy
+
+def train_proximal(
+    net: nn.Module, trainloader: DataLoader, epochs: int,
+    lr: float, device: torch.device,
+    proximal_mu: float = 0.0,
+    global_params: list[torch.Tensor] | None = None,
+) -> float:
+    """Entrena con loss = CrossEntropy + (mu/2)·||w - w_global||² (FedProx).
+
+    Si proximal_mu == 0, equivale a entrenamiento estándar (FedAvg).
+    """
+    net.to(device)
+    net.train()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9)
+
+    if global_params is not None:
+        global_params = [p.to(device) for p in global_params]
+
+    last_loss = 0.0
+    for epoch in range(epochs):
+        running_loss = 0.0
+        n_batches = 0
+        for images, labels in trainloader:
+            images, labels = images.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = net(images)
+            loss = criterion(outputs, labels)
+
+            # Término proximal de FedProx
+            if proximal_mu > 0 and global_params is not None:
+                prox_term = 0.0
+                for local_p, global_p in zip(net.parameters(), global_params):
+                    prox_term = prox_term + ((local_p - global_p) ** 2).sum()
+                loss = loss + (proximal_mu / 2) * prox_term
+
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+            n_batches += 1
+        last_loss = running_loss / max(1, n_batches)
+
+    return last_loss
+
+def set_seed(seed: int) -> None:
+    """Fija seeds para reproducibilidad: Python, NumPy, PyTorch."""
+    import random
+    import numpy as np
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # Forzar determinismo (puede ralentizar un poco)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False

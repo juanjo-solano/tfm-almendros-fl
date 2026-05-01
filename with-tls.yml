@@ -1,0 +1,132 @@
+# with-tls.yml — TLS en el SuperLink y SuperNodes.
+# El ServerApp y los ClientApps SuperExec corren en el mismo host que el SuperLink/SuperNode
+# respectivamente, así que se conectan en --insecure (la conexión sensible es la de
+# SuperLink↔SuperNodes, que sí va cifrada).
+
+services:
+  superlink:
+    command:
+      - --isolation
+      - process
+      - --ssl-ca-certfile=certificates/ca.crt
+      - --ssl-certfile=certificates/server.pem
+      - --ssl-keyfile=certificates/server.key
+    secrets:
+      - source: superlink-ca-certfile
+        target: /app/certificates/ca.crt
+      - source: superlink-certfile
+        target: /app/certificates/server.pem
+      - source: superlink-keyfile
+        target: /app/certificates/server.key
+
+  superexec-serverapp:
+    command:
+      - --insecure
+      - --plugin-type
+      - serverapp
+      - --appio-api-address
+      - 127.0.0.1:9091
+
+  supernode-manana:
+    command:
+      - --superlink
+      - 127.0.0.1:9092
+      - --clientappio-api-address
+      - 0.0.0.0:9094
+      - --isolation
+      - process
+      - --node-config
+      - "partition-id=0 num-partitions=4"
+      - --root-certificates
+      - certificates/superlink-ca.crt
+    secrets:
+      - source: superlink-ca-certfile
+        target: /app/certificates/superlink-ca.crt
+
+  supernode-tarde:
+    command:
+      - --superlink
+      - 127.0.0.1:9092
+      - --clientappio-api-address
+      - 0.0.0.0:9095
+      - --isolation
+      - process
+      - --node-config
+      - "partition-id=1 num-partitions=4"
+      - --root-certificates
+      - certificates/superlink-ca.crt
+    secrets:
+      - source: superlink-ca-certfile
+        target: /app/certificates/superlink-ca.crt
+
+  supernode-nublado:
+    command:
+      - --superlink
+      - 127.0.0.1:9092
+      - --clientappio-api-address
+      - 0.0.0.0:9096
+      - --isolation
+      - process
+      - --node-config
+      - "partition-id=2 num-partitions=4"
+      - --root-certificates
+      - certificates/superlink-ca.crt
+    secrets:
+      - source: superlink-ca-certfile
+        target: /app/certificates/superlink-ca.crt
+
+  supernode-otros:
+    command:
+      - --superlink
+      - 127.0.0.1:9092
+      - --clientappio-api-address
+      - 0.0.0.0:9097
+      - --isolation
+      - process
+      - --node-config
+      - "partition-id=3 num-partitions=4"
+      - --root-certificates
+      - certificates/superlink-ca.crt
+    secrets:
+      - source: superlink-ca-certfile
+        target: /app/certificates/superlink-ca.crt
+
+  superexec-clientapp-manana:
+    command:
+      - --insecure
+      - --plugin-type
+      - clientapp
+      - --appio-api-address
+      - 127.0.0.1:9094
+
+  superexec-clientapp-tarde:
+    command:
+      - --insecure
+      - --plugin-type
+      - clientapp
+      - --appio-api-address
+      - 127.0.0.1:9095
+
+  superexec-clientapp-nublado:
+    command:
+      - --insecure
+      - --plugin-type
+      - clientapp
+      - --appio-api-address
+      - 127.0.0.1:9096
+
+  superexec-clientapp-otros:
+    command:
+      - --insecure
+      - --plugin-type
+      - clientapp
+      - --appio-api-address
+      - 127.0.0.1:9097
+
+secrets:
+  superlink-ca-certfile:
+    file: ./superlink-certificates/ca.crt
+  superlink-certfile:
+    file: ./superlink-certificates/server.pem
+  superlink-keyfile:
+    file: ./superlink-certificates/server.key

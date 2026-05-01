@@ -1,0 +1,108 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "almendros-fl"
+version = "0.4.0"
+description = "Federated Learning con Flower y PyTorch para clasificación de almendros y malas hierbas"
+license = {file = "LICENSE"}
+dependencies = [
+    "flwr[simulation]>=1.28.0",
+    "torch>=2.5.0",
+    "torchvision>=0.20.0",
+    "wandb>=0.17.8",
+    "pandas>=2.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["almendros_fl"]
+
+[tool.flwr.app]
+publisher = "solano"
+fab-format-version = 1
+flwr-version-target = "1.26.1"
+
+[tool.flwr.app.components]
+serverapp = "almendros_fl.server_app:app"
+clientapp = "almendros_fl.client_app:app"
+
+[tool.flwr.app.config]
+# ── Hiperparámetros generales ────────────────────────────────
+num-server-rounds = 12
+fraction-train = 1.0
+fraction-evaluate = 1.0
+local-epochs = 2
+batch-size = 16
+seed = 42
+
+# ── Selección de estrategia ──────────────────────────────────
+# Valores válidos: "fedavg", "fedprox", "fedavgm", "fedbn"
+strategy = "fedprox"
+
+# ── Fase de entrenamiento ────────────────────────────────────
+# 1 = base MobileNetV2 congelada, solo entrena la cabeza Dense (~80K params).
+# 2 = fine-tuning: descongela las últimas N capas de MobileNetV2.
+# El learning rate se ajusta automáticamente según la fase.
+phase = 1
+unfreeze-last-n-layers = 30
+learning-rate-phase1 = 0.001
+learning-rate-phase2 = 0.00001
+
+# Compatibilidad: el cliente lee "learning-rate" como fallback si las
+# claves de fase no existen (no debería pasar, pero por seguridad).
+learning-rate = 0.001
+
+# ── Hiperparámetros específicos de FedProx ───────────────────
+# Valor adaptado para MobileNetV2 frozen: con menos parámetros entrenables
+# (~80K vs 11M de ResNet18), los deltas son más pequeños y mu debe reducirse.
+proximal-mu = 0.001
+
+# ── Hiperparámetros específicos de FedAvgM ───────────────────
+server-momentum = 0.9
+
+# ── Differential Privacy ────────────────────────────────────
+# Desactivado por defecto. Con MobileNetV2 frozen (~80K params entrenables)
+# es probable que DP funcione mejor que con ResNet18; los runs de la fase 5
+# están en results/_failed_runs/ como evidencia experimental con la
+# arquitectura anterior.
+# Checkpoint inicial (vacío = empezar desde modelo random / weights ImageNet).
+# Usado para encadenar Fase 1 → Fase 2: el server_app.py carga estos pesos
+# antes de empezar el run.
+init-from = ""
+
+dp-enabled = false
+
+
+
+#######################################################################
+# CONFIGURATION MIGRATION NOTICE:
+#
+# What was previously called "federation config" for SuperLink
+# connections in pyproject.toml has been renamed and moved.
+#
+# These settings are now **SuperLink connection configuration**
+# and are defined in the Flower configuration file.
+#
+# The entries below are commented out intentionally and are kept
+# only as a migration reference.
+#
+# Docs: https://flower.ai/docs/framework/ref-flower-configuration.html
+#######################################################################
+
+# [tool.flwr.federations]
+# default = "local-simulation"
+
+# # Modo simulación (Fases 1-5)
+# [tool.flwr.federations.local-simulation]
+# options.num-supernodes = 4
+
+# # Modo deployment local sin Docker (Fase 6.1)
+# [tool.flwr.federations.local-deployment]
+# address = "127.0.0.1:9093"
+# insecure = true
+
+# # Modo deployment con Docker Compose (Fase 6.3)
+# [tool.flwr.federations.local-deployment-docker]
+# address = "127.0.0.1:9093"
+# insecure = true

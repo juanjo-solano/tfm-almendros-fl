@@ -1,0 +1,229 @@
+services:
+  # ─────────────────────────────────────────────────────────
+  # SuperLink: orquestador (Alpine, no necesita Python)
+  # ─────────────────────────────────────────────────────────
+  superlink:
+    network_mode: host
+    image: flwr/superlink:${FLWR_VERSION:-1.26.1}
+    command:
+      - --insecure
+      - --isolation
+      - process
+
+  # ─────────────────────────────────────────────────────────
+  # SuperExec del ServerApp: ejecuta tu server_app.py
+  # Imagen construida desde flwr/superexec + tu pyproject.toml + datos
+  # ─────────────────────────────────────────────────────────
+  superexec-serverapp:
+    network_mode: host
+    build:
+      context: ${PROJECT_DIR:-.}
+      dockerfile_inline: |
+        FROM flwr/superexec:${FLWR_VERSION:-1.26.1}
+        USER root
+        RUN apt-get update \
+            && apt-get -y --no-install-recommends install build-essential \
+            && rm -rf /var/lib/apt/lists/*
+        USER app
+        WORKDIR /app
+        COPY --chown=app:app pyproject.toml LICENSE ./
+        COPY --chown=app:app almendros_fl/ ./almendros_fl/
+        COPY --chown=app:app data/ ./data/
+        ENV ALMENDROS_DATA_ROOT=/app/data
+        RUN sed -i 's/.*flwr\[simulation\].*//' pyproject.toml \
+            && python -m pip install -U --no-cache-dir .
+        ENTRYPOINT ["flower-superexec"]
+    command:
+      - --insecure
+      - --plugin-type
+      - serverapp
+      - --appio-api-address
+      - 127.0.0.1:9091
+    restart: on-failure:3
+
+  # ─────────────────────────────────────────────────────────
+  # 4 SuperNodes (uno por contexto: manana, tarde, nublado, otros_moviles)
+  # ─────────────────────────────────────────────────────────
+  supernode-manana:
+    network_mode: host
+    image: flwr/supernode:${FLWR_VERSION:-1.26.1}
+    command:
+      - --insecure
+      - --superlink
+      - 127.0.0.1:9092
+      - --clientappio-api-address
+      - 0.0.0.0:9094
+      - --isolation
+      - process
+      - --node-config
+      - "partition-id=0 num-partitions=4"
+
+  supernode-tarde:
+    network_mode: host
+    image: flwr/supernode:${FLWR_VERSION:-1.26.1}
+    command:
+      - --insecure
+      - --superlink
+      - 127.0.0.1:9092
+      - --clientappio-api-address
+      - 0.0.0.0:9095
+      - --isolation
+      - process
+      - --node-config
+      - "partition-id=1 num-partitions=4"
+
+  supernode-nublado:
+    network_mode: host
+    image: flwr/supernode:${FLWR_VERSION:-1.26.1}
+    command:
+      - --insecure
+      - --superlink
+      - 127.0.0.1:9092
+      - --clientappio-api-address
+      - 0.0.0.0:9096
+      - --isolation
+      - process
+      - --node-config
+      - "partition-id=2 num-partitions=4"
+
+  supernode-otros:
+    network_mode: host
+    image: flwr/supernode:${FLWR_VERSION:-1.26.1}
+    command:
+      - --insecure
+      - --superlink
+      - 127.0.0.1:9092
+      - --clientappio-api-address
+      - 0.0.0.0:9097
+      - --isolation
+      - process
+      - --node-config
+      - "partition-id=3 num-partitions=4"
+
+  # ─────────────────────────────────────────────────────────
+  # 4 SuperExec ClientApp: uno por SuperNode
+  # Misma imagen que superexec-serverapp (con tu paquete + datos)
+  # ─────────────────────────────────────────────────────────
+  superexec-clientapp-manana:
+    network_mode: host
+    build:
+      context: ${PROJECT_DIR:-.}
+      dockerfile_inline: |
+        FROM flwr/superexec:${FLWR_VERSION:-1.26.1}
+        USER root
+        RUN apt-get update \
+            && apt-get -y --no-install-recommends install build-essential \
+            && rm -rf /var/lib/apt/lists/*
+        USER app
+        WORKDIR /app
+        COPY --chown=app:app pyproject.toml LICENSE ./
+        COPY --chown=app:app almendros_fl/ ./almendros_fl/
+        COPY --chown=app:app data/ ./data/
+        ENV ALMENDROS_DATA_ROOT=/app/data
+        RUN sed -i 's/.*flwr\[simulation\].*//' pyproject.toml \
+            && python -m pip install -U --no-cache-dir .
+        ENTRYPOINT ["flower-superexec"]
+    command:
+      - --insecure
+      - --plugin-type
+      - clientapp
+      - --appio-api-address
+      - 127.0.0.1:9094
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+    stop_signal: SIGINT
+
+  superexec-clientapp-tarde:
+    network_mode: host
+    build:
+      context: ${PROJECT_DIR:-.}
+      dockerfile_inline: |
+        FROM flwr/superexec:${FLWR_VERSION:-1.26.1}
+        USER root
+        RUN apt-get update \
+            && apt-get -y --no-install-recommends install build-essential \
+            && rm -rf /var/lib/apt/lists/*
+        USER app
+        WORKDIR /app
+        COPY --chown=app:app pyproject.toml LICENSE ./
+        COPY --chown=app:app almendros_fl/ ./almendros_fl/
+        COPY --chown=app:app data/ ./data/
+        ENV ALMENDROS_DATA_ROOT=/app/data
+        RUN sed -i 's/.*flwr\[simulation\].*//' pyproject.toml \
+            && python -m pip install -U --no-cache-dir .
+        ENTRYPOINT ["flower-superexec"]
+    command:
+      - --insecure
+      - --plugin-type
+      - clientapp
+      - --appio-api-address
+      - 127.0.0.1:9095
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+    stop_signal: SIGINT
+
+  superexec-clientapp-nublado:
+    network_mode: host
+    build:
+      context: ${PROJECT_DIR:-.}
+      dockerfile_inline: |
+        FROM flwr/superexec:${FLWR_VERSION:-1.26.1}
+        USER root
+        RUN apt-get update \
+            && apt-get -y --no-install-recommends install build-essential \
+            && rm -rf /var/lib/apt/lists/*
+        USER app
+        WORKDIR /app
+        COPY --chown=app:app pyproject.toml LICENSE ./
+        COPY --chown=app:app almendros_fl/ ./almendros_fl/
+        COPY --chown=app:app data/ ./data/
+        ENV ALMENDROS_DATA_ROOT=/app/data
+        RUN sed -i 's/.*flwr\[simulation\].*//' pyproject.toml \
+            && python -m pip install -U --no-cache-dir .
+        ENTRYPOINT ["flower-superexec"]
+    command:
+      - --insecure
+      - --plugin-type
+      - clientapp
+      - --appio-api-address
+      - 127.0.0.1:9096
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+    stop_signal: SIGINT
+
+  superexec-clientapp-otros:
+    network_mode: host
+    build:
+      context: ${PROJECT_DIR:-.}
+      dockerfile_inline: |
+        FROM flwr/superexec:${FLWR_VERSION:-1.26.1}
+        USER root
+        RUN apt-get update \
+            && apt-get -y --no-install-recommends install build-essential \
+            && rm -rf /var/lib/apt/lists/*
+        USER app
+        WORKDIR /app
+        COPY --chown=app:app pyproject.toml LICENSE ./
+        COPY --chown=app:app almendros_fl/ ./almendros_fl/
+        COPY --chown=app:app data/ ./data/
+        ENV ALMENDROS_DATA_ROOT=/app/data
+        RUN sed -i 's/.*flwr\[simulation\].*//' pyproject.toml \
+            && python -m pip install -U --no-cache-dir .
+        ENTRYPOINT ["flower-superexec"]
+    command:
+      - --insecure
+      - --plugin-type
+      - clientapp
+      - --appio-api-address
+      - 127.0.0.1:9097
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+    stop_signal: SIGINT
