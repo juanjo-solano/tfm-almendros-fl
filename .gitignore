@@ -61,3 +61,4 @@ config.local.toml
 .flwr/
 !results/figures/*.png
 !results/summary_*.csv
+run_all_6.sh.bak

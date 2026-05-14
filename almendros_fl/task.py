@@ -194,10 +194,43 @@ def _eval_transform():
 
 
 # ───────────────────────────────────────────────────────────
+# Wrapper para aplicar transforms distintos sobre el mismo dataset base
+# ───────────────────────────────────────────────────────────
+class TransformedSubset(torch.utils.data.Dataset):
+    """Envuelve un Subset y aplica un transform al vuelo.
+
+    Necesario porque ImageFolder almacena UN único transform, pero tras
+    random_split queremos aplicar train_transform a una mitad y eval_transform
+    a la otra. La solución canónica es cargar el dataset base SIN transform
+    y dejar que este wrapper aplique el que toque en cada __getitem__.
+    """
+
+    def __init__(self, subset: torch.utils.data.Subset, transform):
+        self.subset = subset
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, idx):
+        # El dataset base devuelve la PIL Image sin transformar
+        # (ImageFolder con transform=None entrega PIL.Image directamente)
+        image, label = self.subset[idx]
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, label
+
+# ───────────────────────────────────────────────────────────
 # Carga de datos por partición (un contexto = un cliente)
 # ───────────────────────────────────────────────────────────
 def load_data(partition_id: int, batch_size: int = 16
               ) -> Tuple[DataLoader, DataLoader]:
+    """Carga el contexto del partition_id y devuelve (train_loader, val_loader).
+
+    Una sola instancia de ImageFolder (sin transform), split 80/20 con
+    seed=42, y wrappers TransformedSubset que aplican train_transform a
+    la partición de entrenamiento y eval_transform a la de validación.
+    """
     if partition_id >= len(CONTEXTS):
         raise ValueError(
             f"partition_id={partition_id} fuera de rango. "
@@ -218,21 +251,20 @@ def load_data(partition_id: int, batch_size: int = 16
             f"No existe la carpeta del contexto {context_name}: {context_dir}"
         )
 
-    full_dataset = ImageFolder(root=str(context_dir),
-                               transform=_train_transform())
+    # Dataset base SIN transform: ImageFolder entrega PIL.Image en bruto
+    base_dataset = ImageFolder(root=str(context_dir), transform=None)
 
-    n_total = len(full_dataset)
+    n_total = len(base_dataset)
     n_train = int(0.8 * n_total)
     n_val = n_total - n_train
     generator = torch.Generator().manual_seed(42)
-    train_ds, val_ds = random_split(full_dataset, [n_train, n_val],
-                                    generator=generator)
+    train_subset, val_subset = random_split(
+        base_dataset, [n_train, n_val], generator=generator
+    )
 
-    # Crear datasets separados con transforms distintos
-    train_base = ImageFolder(root=str(context_dir), transform=_train_transform())
-    val_base = ImageFolder(root=str(context_dir), transform=_eval_transform())
-    train_ds = torch.utils.data.Subset(train_base, train_ds.indices)
-    val_ds = torch.utils.data.Subset(val_base, val_ds.indices)
+    # Cada Subset recibe su propio transform vía wrapper
+    train_ds = TransformedSubset(train_subset, _train_transform())
+    val_ds = TransformedSubset(val_subset, _eval_transform())
 
     train_loader = DataLoader(train_ds, batch_size=batch_size,
                               shuffle=True, num_workers=0)
@@ -243,7 +275,12 @@ def load_data(partition_id: int, batch_size: int = 16
 
 
 def load_centralized_test(batch_size: int = 16) -> DataLoader:
-    """Test centralizado: combina los 20% val de los 4 contextos."""
+    """Test centralizado: combina los 20% val de los 4 contextos.
+
+    Usa la misma seed=42 y la misma fracción 80/20 que load_data,
+    garantizando que se evalúa exactamente sobre las mismas imágenes
+    que cada cliente usa para validación local.
+    """
     if not DATA_ROOT.exists():
         raise FileNotFoundError(
             f"No existe DATA_ROOT={DATA_ROOT}. "
@@ -251,28 +288,31 @@ def load_centralized_test(batch_size: int = 16) -> DataLoader:
             f"absoluta a tu carpeta data/."
         )
 
-    datasets = []
+    val_datasets = []
     missing = []
     for context_name in CONTEXTS:
         ctx_dir = DATA_ROOT / context_name
         if not ctx_dir.exists():
             missing.append(str(ctx_dir))
             continue
-        ds = ImageFolder(root=str(ctx_dir), transform=_eval_transform())
-        n_total = len(ds)
+
+        base_dataset = ImageFolder(root=str(ctx_dir), transform=None)
+        n_total = len(base_dataset)
         n_train = int(0.8 * n_total)
         n_val = n_total - n_train
         generator = torch.Generator().manual_seed(42)
-        _, val_ds = random_split(ds, [n_train, n_val], generator=generator)
-        datasets.append(val_ds)
+        _, val_subset = random_split(
+            base_dataset, [n_train, n_val], generator=generator
+        )
+        val_datasets.append(TransformedSubset(val_subset, _eval_transform()))
 
-    if not datasets:
+    if not val_datasets:
         raise FileNotFoundError(
             f"No se encontró ningún contexto en DATA_ROOT={DATA_ROOT}. "
             f"Faltan: {missing}"
         )
 
-    combined = torch.utils.data.ConcatDataset(datasets)
+    combined = torch.utils.data.ConcatDataset(val_datasets)
     return DataLoader(combined, batch_size=batch_size,
                       shuffle=False, num_workers=0)
 

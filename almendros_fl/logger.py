@@ -39,7 +39,8 @@ class ExperimentLogger:
 
         # Carpeta única para este experimento
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
-        self.run_name = f"{strategy_name}_{timestamp}"
+        seed = run_config.get("seed", "NA")
+        self.run_name = f"{strategy_name}_seed{seed}_{timestamp}"
         base_dir = _get_results_dir(results_dir)
         self.run_dir = base_dir / self.run_name
         self.run_dir.mkdir(parents=True, exist_ok=True)
