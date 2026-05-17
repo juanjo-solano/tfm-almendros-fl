@@ -273,7 +273,7 @@ física distinta (cada SuperNode usa su propio puerto del host:
 
 ### Fase 7: Cambio de arquitectura → MobileNetV2 + Transfer Learning ⭐
 
-**Motivación:** el notebook de la profesora (`Pueba_fotos_nubladas-i_1.ipynb`)
+**Motivación:** el notebook de referencia (`Pueba_fotos_nubladas-i_1.ipynb`)
 demostraba mejores resultados centralizados con **MobileNetV2 pre-entrenado
 + Transfer Learning en 2 fases**. Adaptamos esa arquitectura al contexto
 federado.
@@ -417,7 +417,7 @@ disown
 
 ---
 
-## 📦 Archivos clave (qué entregar a la profesora)
+## 📦 Archivos clave (qué entregar)
 
 ### Mínimo imprescindible (50-80 MB)
 
@@ -529,12 +529,12 @@ ls -lh TFM_Solano_entrega.tar.gz
 - `_tmp/` (clon del repo de Flower)
 - `__pycache__/`
 - `wandb/` dentro de cada run (logs internos de W&B; **opcional**:
-  si la profesora quiere navegar las gráficas online, ver sección
+  para navegar las gráficas online, ver sección
   W&B abajo)
 - `*.bak`, `*.old`
 - `deployment_logs/` (logs del intento Fase 6.1 antes de la versión final)
 - `final_model.pt` en la raíz (residuo viejo)
-- `data/` si pesa demasiado (la profesora ya tiene su propio dataset)
+- `data/` si pesa demasiado (el destinatario ya tiene su propio dataset)
 - `superlink-certificates/ca.key` (clave privada de la CA, sensible)
 
 ---
@@ -622,7 +622,7 @@ sus gráficas interactivas. Desde la interfaz web puedes:
 
 ## 🙏 Créditos
 
-- Dataset y notebook centralizado de referencia: profesora AGV
+- Dataset y notebook centralizado de referencia
 - Framework Flower: <https://flower.ai/>
 - Plantilla Docker: <https://github.com/adap/flower/tree/main/framework/docker/complete>
 

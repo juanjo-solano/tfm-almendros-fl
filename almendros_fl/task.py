@@ -1,12 +1,12 @@
 """almendros_fl: definiciones de modelo, datos y entrenamiento/test.
 
 Arquitectura: MobileNetV2 pre-entrenada en ImageNet + cabeza Dense.
-Adaptada del notebook PRUEBA_CON_FOTOS_NUBLADAS de la profesora AGV.
+Adaptada del notebook de referencia PRUEBA_CON_FOTOS_NUBLADAS.
 
 Soporta entrenamiento en 2 fases:
   - Fase 1: base (features) congelada, solo se entrena la cabeza (~80K params).
   - Fase 2: descongela las últimas N capas con parámetros entrenables
-    (fine-tuning), exactamente igual que en el notebook de la profesora.
+    (fine-tuning), exactamente igual que en el notebook de referencia.
 """
 
 from pathlib import Path
@@ -54,7 +54,7 @@ class Net(nn.Module):
         num_classes: número de clases de salida (4 en este proyecto).
         phase: 1 = base congelada, 2 = fine-tuning de últimas capas.
         unfreeze_last_n_layers: cuántas capas con parámetros se descongelan
-            en fase 2. Por defecto 30 (igual que la profesora en Keras).
+            en fase 2. Por defecto 30 (igual que en la referencia en Keras).
 
     Estructura:
       Input (3, 128, 128)
@@ -78,7 +78,7 @@ class Net(nn.Module):
         self.features = backbone.features
         self.avgpool = nn.AdaptiveAvgPool2d(1)
 
-        # Cabeza Dense (igual estructura que la profesora):
+        # Cabeza Dense (igual estructura que la referencia):
         #   Dropout → Dense(64, ReLU) → Dropout → Dense(num_classes)
         # MobileNetV2 termina con 1280 channels.
         self.classifier = nn.Sequential(
@@ -165,10 +165,10 @@ def is_bn_key(key: str) -> bool:
 
 
 # ───────────────────────────────────────────────────────────
-# Transforms: con augmentation similar al notebook de la profesora
+# Transforms: con augmentation similar al notebook de referencia
 # ───────────────────────────────────────────────────────────
 def _train_transform():
-    """Augmentation siguiendo el notebook de la profesora (RandomFlip
+    """Augmentation siguiendo el notebook de referencia (RandomFlip
     horizontal+vertical, RandomRotation 0.15, RandomZoom 0.15) +
     normalización estándar de ImageNet (requerida por MobileNetV2)."""
     return transforms.Compose([
