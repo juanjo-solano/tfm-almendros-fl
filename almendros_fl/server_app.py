@@ -45,7 +45,8 @@ def _extract_client_metrics(reply: Message) -> dict:
 # Mixin de logging compartido entre estrategias
 # ───────────────────────────────────────────────────────────
 class LoggingMixin:
-    """Añade logging unificado (CSV + W&B) a cualquier estrategia FL."""
+    """Añade logging unificado (CSV + W&B) + tracking del best model
+    para early stopping a cualquier estrategia FL."""
 
     def _attach_logger(self, logger: ExperimentLogger):
         self._exp_logger = logger
@@ -54,6 +55,12 @@ class LoggingMixin:
         self._eval_per_client: dict[int, dict] = {}
         self._global_metrics: dict[str, float] = {}
         self._round_train_loss_agg: float | None = None
+        # ── Early stopping (selección del best model) ──
+        self._best_accuracy: float = -1.0
+        self._best_round: int = 0
+        self._best_state_dict: dict | None = None
+        self._patience_counter: int = 0
+        self._early_stop_triggered: bool = False
 
     def configure_train(
         self, server_round: int, arrays: ArrayRecord,
@@ -156,9 +163,39 @@ class LoggingMixin:
             round_time_s=round_time,
         )
 
-    def record_global_eval(self, server_round: int, loss: float, accuracy: float):
-        """Llamado por el evaluate_fn central. Hace flush de la ronda completa."""
+    def record_global_eval(self, server_round: int, loss: float, accuracy: float,
+                           current_state_dict: dict | None = None,
+                           patience: int = 3):
+        """Llamado por el evaluate_fn central. Hace flush de la ronda completa
+        y actualiza el tracking del best model para early stopping."""
         self._global_metrics = {"global_loss": loss, "global_accuracy": accuracy}
+
+        # ── Early stopping: tracking del best model ──
+        if server_round >= 1 and current_state_dict is not None:
+            if accuracy > self._best_accuracy:
+                self._best_accuracy = accuracy
+                self._best_round = server_round
+                # Copia profunda del state_dict (clone tensores)
+                self._best_state_dict = {
+                    k: v.detach().clone() for k, v in current_state_dict.items()
+                }
+                self._patience_counter = 0
+                print(f"[EarlyStop] Nuevo mejor accuracy={accuracy:.4f} "
+                      f"en ronda {server_round}")
+            else:
+                self._patience_counter += 1
+                print(f"[EarlyStop] Sin mejora ({self._patience_counter}/{patience}). "
+                      f"Best={self._best_accuracy:.4f} en ronda {self._best_round}")
+
+                if (self._patience_counter >= patience
+                        and not self._early_stop_triggered):
+                    self._early_stop_triggered = True
+                    print(f"[EarlyStop] TRIGGER en ronda {server_round}: "
+                          f"paciencia agotada. El best model queda fijado "
+                          f"(ronda {self._best_round}, "
+                          f"acc={self._best_accuracy:.4f}). "
+                          f"Las rondas restantes se ejecutaran pero no se usaran.")
+
         # Flush solo si la ronda ya pasó por evaluate clientes (server_round >= 1).
         # La ronda 0 es la evaluación inicial sin clientes, no hay nada que loggear.
         if server_round >= 1:
@@ -194,9 +231,9 @@ def build_strategy(name: str, run_config: dict, **common):
     if name == "fedavgm":
         momentum = float(run_config.get("server-momentum", 0.9))
         return LoggedFedAvgM(server_momentum=momentum, **common)
-    if name == "fedbn":                                                       # ← NUEVO
+    if name == "fedbn":
         # FedBN se implementa en el cliente; el servidor agrega como FedAvg.
-        return LoggedFedAvg(**common)                                         # ← NUEVO
+        return LoggedFedAvg(**common)
     raise ValueError(
         f"Estrategia desconocida: '{name}'. "
         f"Valores válidos: 'fedavg', 'fedprox', 'fedavgm', 'fedbn'."
@@ -287,7 +324,7 @@ def main(grid: Grid, context: Context):
 
     print(f"[Servidor] Estrategia activa: {strategy.__class__.__name__}")
 
-# ── Construir configs (train y evaluate) ──
+    # ── Construir configs (train y evaluate) ──
     train_config_dict: dict = {"lr": lr}
     evaluate_config_dict: dict = {}
 
@@ -302,9 +339,15 @@ def main(grid: Grid, context: Context):
         evaluate_config_dict["fedbn"] = True
         print(f"[Servidor] Modo FedBN: BatchNorm local en cada cliente")
 
+    # ── Early stopping (selección del best model) ──
+    patience = int(cfg.get("early-stopping-patience", 3))
+    print(f"[Servidor] Early stopping activado: patience={patience}, "
+          f"monitor=global_accuracy")
+
     def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
         model = Net(phase=phase_cfg, unfreeze_last_n_layers=unfreeze_n)
-        model.load_state_dict(arrays.to_torch_state_dict())
+        state_dict = arrays.to_torch_state_dict()
+        model.load_state_dict(state_dict)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         test_loader = load_centralized_test(batch_size=32)
         loss, acc = test(model, test_loader, device)
@@ -312,20 +355,43 @@ def main(grid: Grid, context: Context):
             f"[Servidor] Ronda {server_round} | "
             f"global_loss={loss:.4f} | global_accuracy={acc:.4f}"
         )
-        logged_strategy.record_global_eval(server_round, loss, acc)
+        logged_strategy.record_global_eval(
+            server_round, loss, acc,
+            current_state_dict=state_dict, patience=patience,
+        )
         return MetricRecord({"global_loss": loss, "global_accuracy": acc})
 
     result = strategy.start(
         grid=grid,
         initial_arrays=arrays,
         train_config=ConfigRecord(train_config_dict),
-        evaluate_config=ConfigRecord(evaluate_config_dict),    # ← NUEVO
+        evaluate_config=ConfigRecord(evaluate_config_dict),
         num_rounds=num_rounds,
         evaluate_fn=global_evaluate,
     )
 
+    # ── Guardar modelo final (último estado tras todas las rondas) ──
     final_path = logger.run_dir / "final_model.pt"
     torch.save(result.arrays.to_torch_state_dict(), final_path)
     print(f"[Servidor] Modelo final guardado en: {final_path}")
+
+    # ── Guardar best model (early stopping: ronda con mejor global_accuracy) ──
+    if logged_strategy._best_state_dict is not None:
+        best_path = logger.run_dir / "best_model.pt"
+        torch.save(logged_strategy._best_state_dict, best_path)
+        print(
+            f"[Servidor] Best model guardado en: {best_path} "
+            f"(ronda {logged_strategy._best_round}, "
+            f"acc={logged_strategy._best_accuracy:.4f})"
+        )
+
+        # Anotar info de early stopping en config.txt
+        with open(logger.run_dir / "config.txt", "a") as f:
+            f.write(f"best_round={logged_strategy._best_round}\n")
+            f.write(f"best_accuracy={logged_strategy._best_accuracy:.6f}\n")
+            f.write(f"early_stop_triggered={logged_strategy._early_stop_triggered}\n")
+            f.write(f"early_stop_patience={patience}\n")
+    else:
+        print("[Servidor] No se guardo best_model (no hubo evaluaciones).")
 
     logger.finish()
